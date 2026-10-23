@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to publish releases on tags
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW i686 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            gcc-mingw-w64-i686-posix g++-mingw-w64-i686-posix \
+            binutils-mingw-w64-i686 mingw-w64-i686-dev
+          i686-w64-mingw32-g++-posix --version
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=cmake/mingw32.cmake
+          -DMINGW_SUFFIX=-posix
+          -DCMAKE_BUILD_TYPE=Release
+          -DFIX_VERSION_STRING=${{ steps.version.outputs.version }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Check DLL imports
+        run: |
+          imports=$(i686-w64-mingw32-objdump -p build/MXReflexFix.asi | grep "DLL Name" | awk '{print $3}')
+          echo "$imports"
+          if echo "$imports" | grep -iE "libstdc|libgcc|winpthread|mcfgthread"; then
+            echo "::error::MXReflexFix.asi depends on a MinGW runtime DLL; it must be statically linked."
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/MXReflexFix.asi MXReflexFix.ini README.md dist/
+          cd dist && zip -9 "../MXReflexFix-${{ steps.version.outputs.version }}.zip" *
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MXReflexFix-${{ steps.version.outputs.version }}
+          path: dist/
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MXReflexFix-${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true
